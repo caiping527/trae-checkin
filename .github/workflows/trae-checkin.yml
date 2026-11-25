@@ -1,0 +1,23 @@
+name: Trae 每日签到
+
+on:
+  schedule:
+    # 北京时间 09:12，避开整点（整点是全网高峰，容易被判「签到人数过多」）
+    - cron: '12 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 逐号签到（错峰 5~15 秒）
+        env:
+          TRAE_ACCOUNTS: ${{ secrets.TRAE_ACCOUNTS }}
+        run: node checkin.js
