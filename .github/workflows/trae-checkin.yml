@@ -22,3 +22,15 @@ jobs:
           TRAE_ACCOUNTS: ${{ secrets.TRAE_ACCOUNTS }}
           WECOM: ${{ secrets.WECOM }}
         run: node checkin.js
+
+  heartbeat:
+    name: 上报成功心跳
+    needs: checkin
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Healthchecks
+        run: |
+          U="${{ vars.HC_PING_URL }}"
+          if [ -z "$U" ]; then echo "[心跳] 未配置 HC_PING_URL，跳过"; exit 0; fi
+          if curl -fsS --max-time 15 --retry 2 "$U"; then echo "[心跳] 已上报成功"; fi
