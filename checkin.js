@@ -136,19 +136,34 @@ async function main() {
     console.log(`  ${item.account.nickname || item.account.uid}：${item.result.message || ''}`)
   }
 
+  const ineligible = results.filter(r => r.result.outcome === 'ineligible').length
   const lines = [
-    `【Trae签到】${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
-    `新领 ${claimed} · 已签 ${done} · 失败 ${failed.length} · 未开通 ${results.filter(r => r.result.outcome === 'ineligible').length}`,
+    '📌 Trae · 每日签到播报',
+    `📅 ${new Date().toISOString().slice(0, 10)}`,
+    `📣 共 ${results.length} 个账号，新领 ${claimed}、已签 ${done}、失败 ${failed.length}、未开通 ${ineligible}`,
   ]
   for (const item of results) {
+    const outcome = item.result.outcome
+    const good = ['claimed', 'done', 'ineligible'].includes(outcome)
     const name = item.account.nickname || item.account.uid
-    let line = `${name}：${item.result.outcome}`
-    if (item.result.credits !== undefined) line += `（积分 ${item.result.credits}）`
-    if (['auth', 'error', 'busy'].includes(item.result.outcome) && item.result.message) {
-      line += ` — ${item.result.message}`
+    const phone = item.account.phone || ''
+    lines.push('')
+    lines.push((good ? '🟩 ' : '🟥 ') + name + (phone ? `（${phone}）` : ''))
+    if (outcome === 'claimed') {
+      lines.push(`🆕 签到成功，当前积分 ${item.result.credits ?? 0} 分`)
+    } else if (outcome === 'done') {
+      lines.push(`✅ 今天已经签过，当前积分 ${item.result.credits ?? 0} 分`)
+    } else if (outcome === 'ineligible') {
+      lines.push('⚪ 该账号没有签到活动（免费或企业套餐）')
+    } else {
+      lines.push(`❗ ${(item.result.message || '未知原因').slice(0, 60)}`)
     }
-    lines.push(line)
+    if (item.result.streakDays) lines.push(`🔥 连续签到 ${item.result.streakDays} 天`)
   }
+  lines.push('')
+  lines.push(failed.length
+    ? '⚠️ 有账号失败，按上面 🟥 那行提示处理，处理完重跑一次'
+    : '⚪ 全部账号正常，明天同一时间自动再签')
   const pushed = await pushWecom(lines.join('\n'))
   console.log(`[推送] 企业微信：${pushed ? '已发送' : '未发送（没配 WECOM 或发送失败）'}`)
   if (failed.length) process.exit(1)
