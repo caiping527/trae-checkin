@@ -22,7 +22,6 @@ jobs:
           TRAE_ACCOUNTS: ${{ secrets.TRAE_ACCOUNTS }}
           WECOM: ${{ secrets.WECOM }}
         run: node checkin.js
-
   heartbeat:
     name: 上报成功心跳
     needs: checkin
