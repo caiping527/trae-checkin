@@ -39,6 +39,38 @@ function readAccounts() {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
+// 企业微信推送：WECOM 是四段凭据 corpid,corpsecret,touser,agentid（仓库 Secret）
+async function pushWecom(text) {
+  const raw = (process.env.WECOM || '').trim()
+  if (!raw) return false
+  const parts = raw.split(',').map(item => item.trim())
+  if (parts.length < 4 || !parts[0] || !parts[1]) return false
+  const [corpid, secret, touser, agentid] = parts
+  try {
+    const tokenResp = await fetch('https://qyapi.weixin.qq.com/cgi-bin/gettoken?' + new URLSearchParams({
+      corpid, corpsecret: secret,
+    }))
+    const token = await tokenResp.json()
+    if (!token.access_token) return false
+    const sendResp = await fetch('https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token='
+      + encodeURIComponent(token.access_token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        touser: touser || '@all',
+        msgtype: 'text',
+        agentid: Number(agentid),
+        text: { content: text },
+        safe: 0,
+      }),
+    })
+    const result = await sendResp.json()
+    return result.errcode === 0
+  } catch {
+    return false
+  }
+}
+
 async function checkin(credential) {
   const headers = protocol.checkinHeaders(credential)
   const UG = protocol.UG_HOST || 'https://api.trae.cn'
@@ -103,6 +135,22 @@ async function main() {
   for (const item of failed) {
     console.log(`  ${item.account.nickname || item.account.uid}：${item.result.message || ''}`)
   }
+
+  const lines = [
+    `【Trae签到】${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
+    `新领 ${claimed} · 已签 ${done} · 失败 ${failed.length} · 未开通 ${results.filter(r => r.result.outcome === 'ineligible').length}`,
+  ]
+  for (const item of results) {
+    const name = item.account.nickname || item.account.uid
+    let line = `${name}：${item.result.outcome}`
+    if (item.result.credits !== undefined) line += `（积分 ${item.result.credits}）`
+    if (['auth', 'error', 'busy'].includes(item.result.outcome) && item.result.message) {
+      line += ` — ${item.result.message}`
+    }
+    lines.push(line)
+  }
+  const pushed = await pushWecom(lines.join('\n'))
+  console.log(`[推送] 企业微信：${pushed ? '已发送' : '未发送（没配 WECOM 或发送失败）'}`)
   if (failed.length) process.exit(1)
 }
 
