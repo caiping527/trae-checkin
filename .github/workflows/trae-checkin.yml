@@ -20,4 +20,5 @@ jobs:
       - name: 逐号签到（错峰 5~15 秒）
         env:
           TRAE_ACCOUNTS: ${{ secrets.TRAE_ACCOUNTS }}
+          WECOM: ${{ secrets.WECOM }}
         run: node checkin.js
