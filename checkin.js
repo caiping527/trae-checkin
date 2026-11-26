@@ -105,6 +105,29 @@ async function checkin(credential) {
   return { outcome: 'claimed', credits: after.credits, extraCredits: after.extraCredits, streakDays: after.streakDays }
 }
 
+// 余额（当前总积分 + 到期日）：签到接口只回「今天领到多少」，总积分在 ent_usage
+// require_usage 缺了它上游只回额度上限、算不出还剩多少；req_source=1 与客户端一致
+async function balance(credential) {
+  const UG = protocol.UG_HOST || 'https://api.trae.cn'
+  const response = await fetch(UG + protocol.ENT_USAGE_PATH, {
+    method: 'POST',
+    headers: protocol.checkinHeaders(credential),
+    body: JSON.stringify({ require_usage: true, req_source: 1 }),
+  })
+  if (!response.ok) throw new Error(`余额查询 HTTP ${response.status}`)
+  const parsed = protocol.parseCreditBalance(await response.json().catch(() => ({})))
+  const expiries = (parsed.packages || [])
+    .filter(item => item.remaining > 0 && item.expireAt > 0)
+    .map(item => item.expireAt)
+  return { total: parsed.total, expireAt: expiries.length ? Math.min(...expiries) : 0 }
+}
+
+// 到期日按北京时间显示（上游给的是 UTC 秒级时间戳）
+function beijingDate(ms) {
+  if (!ms) return ''
+  return new Date(Number(ms) + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
+
 async function main() {
   const accounts = readAccounts()
   console.log(`[账号] 共 ${accounts.length} 个 Trae 账号，逐号签到（错峰 5~15 秒）`)
@@ -120,7 +143,22 @@ async function main() {
     } catch (error) {
       result = { outcome: 'error', message: error.message }
     }
-    console.log(result.outcome + (result.credits !== undefined ? `（积分 ${result.credits}）` : ''))
+    // 只有「号还能用」的状态才值得再查一次总积分；鉴权失败/报错时查了也是 401
+    if (['claimed', 'done', 'ineligible'].includes(result.outcome)) {
+      try {
+        const info = await balance(account)
+        result.totalCredits = Math.round(Number(info.total) || 0)
+        result.expireAt = info.expireAt || 0
+      } catch (error) {
+        result.totalCredits = null
+        result.expireAt = 0
+        result.balanceError = error.message
+      }
+    }
+    const tail = result.outcome === 'claimed'
+      ? `（今日 +${result.credits ?? 0}，总 ${result.totalCredits ?? '—'}）`
+      : `（总 ${result.totalCredits ?? '—'}）`
+    console.log(result.outcome + tail)
     if (result.outcome === 'auth') {
       console.log('   修法：本地 AI路由 → 渠道账号 → Trae 删号重扫，然后重新跑 上传.py。')
     }
@@ -147,14 +185,21 @@ async function main() {
     const good = ['claimed', 'done', 'ineligible'].includes(outcome)
     const name = item.account.nickname || item.account.uid
     const phone = item.account.phone || ''
+    // 总积分与到期：查不到就明说，不拿今天的签到分冒充总积分
+    const totalText = (item.result.totalCredits === undefined || item.result.totalCredits === null)
+      ? '总积分查询失败'
+      : `当前总积分 ${item.result.totalCredits} 分`
+    const expireText = item.result.expireAt
+      ? `，${beijingDate(item.result.expireAt)} 到期`
+      : '，暂无到期日'
     lines.push('')
     lines.push((good ? '🟩 ' : '🟥 ') + name + (phone ? `（${phone}）` : ''))
     if (outcome === 'claimed') {
-      lines.push(`🆕 签到成功，当前积分 ${item.result.credits ?? 0} 分`)
+      lines.push(`🆕 签到成功 +${item.result.credits ?? 0}；${totalText}${expireText}`)
     } else if (outcome === 'done') {
-      lines.push(`✅ 今天已经签过，当前积分 ${item.result.credits ?? 0} 分`)
+      lines.push(`✅ 今天已经签过；${totalText}${expireText}`)
     } else if (outcome === 'ineligible') {
-      lines.push('⚪ 该账号没有签到活动（免费或企业套餐）')
+      lines.push(`⚪ 该账号没有签到活动（免费或企业套餐）；${totalText}${expireText}`)
     } else {
       lines.push(`❗ ${(item.result.message || '未知原因').slice(0, 60)}`)
     }
