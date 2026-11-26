@@ -142,41 +142,55 @@ function daysLeft(ms, nowMs) {
   return a - b
 }
 
-// 到期分布：按「5 天窗口」归并，先到期的那批排最前，方便决定先用哪部分积分
-const WINDOW_MS = 5 * 86400000
+// 到期分布：照 WorkBuddy 播报模板，说清「几天后开始过期、三天内一共过期多少」
+const DAY = 86400000
 
-function expiryWindows(packages) {
+// 北京日期序号：把时间戳换算成「第几天」，三天窗口按日期比，不按 72 小时
+function dayIndex(ms) {
+  return Math.floor((Number(ms) + 8 * 3600 * 1000) / DAY)
+}
+
+function expiryBlock(packages, nowMs = Date.now()) {
   const alive = (packages || [])
     .filter(item => item && Number(item.remaining) > 0 && Number(item.expireAt) > 0)
     .map(item => ({ remaining: Number(item.remaining), expireAt: Number(item.expireAt) }))
     .sort((a, b) => a.expireAt - b.expireAt)
-  const windows = []
-  for (const item of alive) {
-    const last = windows[windows.length - 1]
-    if (last && item.expireAt - last.start < WINDOW_MS) {
-      last.amount += item.remaining
-      last.end = item.expireAt
-    } else {
-      windows.push({ start: item.expireAt, end: item.expireAt, amount: item.remaining })
-    }
+  if (!alive.length) return ['📅 暂无到期数据']
+
+  const start = alive[0].expireAt
+  const startIdx = dayIndex(start)
+  // 三天窗口 = 最早到期日 + 之后两天，合计这一批要过期的积分
+  const threeDay = alive
+    .filter(item => {
+      const idx = dayIndex(item.expireAt)
+      return idx >= startIdx && idx <= startIdx + 2
+    })
+    .reduce((sum, item) => sum + item.remaining, 0)
+
+  const left = daysLeft(start, nowMs)
+  const when = left <= 0 ? '今天' : left === 1 ? '明天' : `${left} 天后`
+  const lines = [
+    `📅 ${when}，${beijingDate(start)} 开始，三天内过期 ${Math.round(threeDay)} 分`,
+  ]
+  if (left <= 0) {
+    lines.push('⏰ 今天就到期，尽快用掉')
+  } else if (left === 1) {
+    lines.push('⏰ 明天就到期，今天用掉')
+  } else {
+    const useBy = beijingDate(start - DAY)
+    if (useBy) lines.push(`⏰ 建议 ${useBy} 前用掉（提前一天）`)
   }
-  return windows
+  return lines
 }
 
-function expiryLine(packages, nowMs = Date.now()) {
-  const windows = expiryWindows(packages)
-  if (!windows.length) return ''
-  const parts = windows.map((win, index) => {
-    const day = beijingDate(win.start).slice(5)
-    const amount = Math.round(win.amount)
-    if (index === 0) {
-      const left = daysLeft(win.start, nowMs)
-      const when = left <= 0 ? '今天到期' : left === 1 ? '明天到期' : `${left} 天后到期`
-      return `5 天内 ${amount} 分（${day}，${when}）`
-    }
-    return `${day} 起 5 天内 ${amount} 分`
-  })
-  return '⏳ 到期：' + parts.join('｜')
+// 账号标签照模板写「尾号 xxxx」：昵称本身是数字尾号就直接用，否则退回手机尾号
+function tailLabel(account) {
+  const raw = String(account.nickname || '').trim()
+  const digits = raw.replace(/\D/g, '')
+  if (digits.length >= 4) return '尾号' + digits.slice(-4)
+  const phone = String(account.phone || '').replace(/\D/g, '')
+  if (phone.length >= 4) return '尾号' + phone.slice(-4)
+  return raw || String(account.uid || '未命名')
 }
 
 async function main() {
@@ -236,30 +250,16 @@ async function main() {
   for (const item of results) {
     const outcome = item.result.outcome
     const good = ['claimed', 'done', 'ineligible'].includes(outcome)
-    const name = item.account.nickname || item.account.uid
-    const phone = item.account.phone || ''
-    // 总积分与到期：查不到就明说，不拿今天的签到分冒充总积分
-    const totalText = (item.result.totalCredits === undefined || item.result.totalCredits === null)
-      ? '总积分查询失败'
-      : `当前总积分 ${item.result.totalCredits} 分`
-    const expireText = item.result.expireAt
-      ? `，最早 ${beijingDate(item.result.expireAt).slice(5)} 到期`
-      : '，暂无到期日'
     lines.push('')
-    lines.push((good ? '🟩 ' : '🟥 ') + name + (phone ? `（${phone}）` : ''))
-    if (outcome === 'claimed') {
-      lines.push(`🆕 签到成功 +${item.result.credits ?? 0}；${totalText}${expireText}`)
-    } else if (outcome === 'done') {
-      lines.push(`✅ 今天已经签过；${totalText}${expireText}`)
-    } else if (outcome === 'ineligible') {
-      lines.push(`⚪ 该账号没有签到活动（免费或企业套餐）；${totalText}${expireText}`)
+    lines.push((good ? '🟩 ' : '🟥 ') + tailLabel(item.account))
+    if (good) {
+      // 模板：先给当前积分，再给「几天后开始过期 + 三天内过期合计 + 建议用掉日」
+      const total = item.result.totalCredits
+      lines.push(`💰 当前积分 ${total === undefined || total === null ? '查询失败' : total} 分`)
+      for (const part of expiryBlock(item.result.packages)) lines.push(part)
     } else {
       lines.push(`❗ ${(item.result.message || '未知原因').slice(0, 60)}`)
     }
-    // 到期分布：先到期多少、之后每 5 天一批各多少，决定先用哪部分积分
-    const dist = expiryLine(item.result.packages)
-    if (dist) lines.push(dist)
-    if (item.result.streakDays) lines.push(`🔥 连续签到 ${item.result.streakDays} 天`)
   }
   lines.push('')
   lines.push(failed.length
