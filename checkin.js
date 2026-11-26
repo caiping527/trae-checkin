@@ -116,16 +116,67 @@ async function balance(credential) {
   })
   if (!response.ok) throw new Error(`余额查询 HTTP ${response.status}`)
   const parsed = protocol.parseCreditBalance(await response.json().catch(() => ({})))
-  const expiries = (parsed.packages || [])
+  // 每个资源包的剩余与到期都留着：播报要按到期分布展示，不能只留一个最小值
+  const packages = (parsed.packages || [])
     .filter(item => item.remaining > 0 && item.expireAt > 0)
-    .map(item => item.expireAt)
-  return { total: parsed.total, expireAt: expiries.length ? Math.min(...expiries) : 0 }
+    .map(item => ({ remaining: item.remaining, expireAt: item.expireAt }))
+  const expiries = packages.map(item => item.expireAt)
+  return {
+    total: parsed.total,
+    expireAt: expiries.length ? Math.min(...expiries) : 0,
+    packages,
+  }
 }
 
 // 到期日按北京时间显示（上游给的是 UTC 秒级时间戳）
 function beijingDate(ms) {
   if (!ms) return ''
   return new Date(Number(ms) + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
+
+// 天数差：只比「北京日期」，不看时分，避免 23:59 到期算成多一天
+function daysLeft(ms, nowMs) {
+  const DAY = 86400000
+  const a = Math.floor((Number(ms) + 8 * 3600 * 1000) / DAY)
+  const b = Math.floor((Number(nowMs) + 8 * 3600 * 1000) / DAY)
+  return a - b
+}
+
+// 到期分布：按「5 天窗口」归并，先到期的那批排最前，方便决定先用哪部分积分
+const WINDOW_MS = 5 * 86400000
+
+function expiryWindows(packages) {
+  const alive = (packages || [])
+    .filter(item => item && Number(item.remaining) > 0 && Number(item.expireAt) > 0)
+    .map(item => ({ remaining: Number(item.remaining), expireAt: Number(item.expireAt) }))
+    .sort((a, b) => a.expireAt - b.expireAt)
+  const windows = []
+  for (const item of alive) {
+    const last = windows[windows.length - 1]
+    if (last && item.expireAt - last.start < WINDOW_MS) {
+      last.amount += item.remaining
+      last.end = item.expireAt
+    } else {
+      windows.push({ start: item.expireAt, end: item.expireAt, amount: item.remaining })
+    }
+  }
+  return windows
+}
+
+function expiryLine(packages, nowMs = Date.now()) {
+  const windows = expiryWindows(packages)
+  if (!windows.length) return ''
+  const parts = windows.map((win, index) => {
+    const day = beijingDate(win.start).slice(5)
+    const amount = Math.round(win.amount)
+    if (index === 0) {
+      const left = daysLeft(win.start, nowMs)
+      const when = left <= 0 ? '今天到期' : left === 1 ? '明天到期' : `${left} 天后到期`
+      return `5 天内 ${amount} 分（${day}，${when}）`
+    }
+    return `${day} 起 5 天内 ${amount} 分`
+  })
+  return '⏳ 到期：' + parts.join('｜')
 }
 
 async function main() {
@@ -149,9 +200,11 @@ async function main() {
         const info = await balance(account)
         result.totalCredits = Math.round(Number(info.total) || 0)
         result.expireAt = info.expireAt || 0
+        result.packages = info.packages || []
       } catch (error) {
         result.totalCredits = null
         result.expireAt = 0
+        result.packages = []
         result.balanceError = error.message
       }
     }
@@ -190,7 +243,7 @@ async function main() {
       ? '总积分查询失败'
       : `当前总积分 ${item.result.totalCredits} 分`
     const expireText = item.result.expireAt
-      ? `，${beijingDate(item.result.expireAt)} 到期`
+      ? `，最早 ${beijingDate(item.result.expireAt).slice(5)} 到期`
       : '，暂无到期日'
     lines.push('')
     lines.push((good ? '🟩 ' : '🟥 ') + name + (phone ? `（${phone}）` : ''))
@@ -203,6 +256,9 @@ async function main() {
     } else {
       lines.push(`❗ ${(item.result.message || '未知原因').slice(0, 60)}`)
     }
+    // 到期分布：先到期多少、之后每 5 天一批各多少，决定先用哪部分积分
+    const dist = expiryLine(item.result.packages)
+    if (dist) lines.push(dist)
     if (item.result.streakDays) lines.push(`🔥 连续签到 ${item.result.streakDays} 天`)
   }
   lines.push('')
