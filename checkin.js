@@ -183,6 +183,40 @@ function expiryBlock(packages, nowMs = Date.now()) {
   return lines
 }
 
+// 最早到期的那一笔：{ expire, amount }
+function nearestExpiry(result) {
+  let best = { expire: 0, amount: 0 }
+  for (const item of (result && result.packages) || []) {
+    const remaining = Number(item && item.remaining) || 0
+    const expire = Number(item && item.expireAt) || 0
+    if (remaining <= 0 || expire <= 0) continue
+    if (!best.expire || expire < best.expire) best = { expire, amount: remaining }
+  }
+  return best
+}
+
+// 今天该用哪些号：取「最早到期日」那一组，同一天的都算。
+// 一天消耗量有限，同一天有几个号到期时要轮着用（2026-11-27 与
+// WorkBuddy / 小浣熊 / Qoder 播报统一口径：最早到期顶到第一）。
+function pickToday(stats, window = 7) {
+  const cand = stats.filter(s => s.days !== null && s.days <= window)
+  if (!cand.length) return []
+  const first = Math.min(...cand.map(s => s.days))
+  return cand.filter(s => s.days === first)
+}
+
+// 推荐句：把最早到期那一组号全列出来，附当天到期分
+function todaySentence(stats) {
+  const picked = pickToday(stats)
+  if (!picked.length) return '⚪ 近 7 天没有临期积分，不用特意切号'
+  const days = picked[0].days
+  const when = days <= 0 ? '今天' : days === 1 ? '明天' : `${days} 天后`
+  const names = picked
+    .map(s => tailLabel(s.account) + (s.amount ? `（${Math.round(s.amount)} 分）` : ''))
+    .join('、')
+  return `📣 今天优先用 ${names} —— ${beijingDate(picked[0].expire)} 开始过期（${when}）`
+}
+
 // 账号标签照模板写「尾号 xxxx」：昵称本身是数字尾号就直接用，否则退回手机尾号
 function tailLabel(account) {
   const raw = String(account.nickname || '').trim()
@@ -242,12 +276,27 @@ async function main() {
   }
 
   const ineligible = results.filter(r => r.result.outcome === 'ineligible').length
+  // 最早到期顶到第一：有到期数据的按最早到期日升序，失败/查不到余额的排后面。
+  // 签到顺序是账号列表顺序，跟「谁先用」无关，播报不能照它排。
+  const stats = results
+    .map(({ account, result }) => {
+      const near = nearestExpiry(result)
+      return {
+        account, result,
+        expire: near.expire,
+        amount: near.amount,
+        days: near.expire ? daysLeft(near.expire) : null,
+      }
+    })
+    .sort((a, b) => ((a.days === null ? 999 : a.days) - (b.days === null ? 999 : b.days))
+      || (b.amount - a.amount))
   const lines = [
     '📌 Trae · 每日签到播报',
     `📅 ${new Date().toISOString().slice(0, 10)}`,
     `📣 共 ${results.length} 个账号，新领 ${claimed}、已签 ${done}、失败 ${failed.length}、未开通 ${ineligible}`,
+    todaySentence(stats),
   ]
-  for (const item of results) {
+  for (const item of stats) {
     const outcome = item.result.outcome
     const good = ['claimed', 'done', 'ineligible'].includes(outcome)
     lines.push('')
