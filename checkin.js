@@ -195,6 +195,24 @@ function nearestExpiry(result) {
   return best
 }
 
+// 播报用的行：最早到期那一笔 + 剩余天数（按北京日期差）。
+// 注意 daysLeft 的第二个参数没有默认值，必须显式传 now——
+// 漏了会算成 NaN，排序失效、推荐句还会误报「近 7 天没有临期积分」。
+function buildStats(results, nowMs = Date.now()) {
+  return results
+    .map(({ account, result }) => {
+      const near = nearestExpiry(result)
+      return {
+        account, result,
+        expire: near.expire,
+        amount: near.amount,
+        days: near.expire ? daysLeft(near.expire, nowMs) : null,
+      }
+    })
+    .sort((a, b) => ((a.days === null ? 999 : a.days) - (b.days === null ? 999 : b.days))
+      || (b.amount - a.amount))
+}
+
 // 今天该用哪些号：取「最早到期日」那一组，同一天的都算。
 // 一天消耗量有限，同一天有几个号到期时要轮着用（2026-11-27 与
 // WorkBuddy / 小浣熊 / Qoder 播报统一口径：最早到期顶到第一）。
@@ -278,18 +296,7 @@ async function main() {
   const ineligible = results.filter(r => r.result.outcome === 'ineligible').length
   // 最早到期顶到第一：有到期数据的按最早到期日升序，失败/查不到余额的排后面。
   // 签到顺序是账号列表顺序，跟「谁先用」无关，播报不能照它排。
-  const stats = results
-    .map(({ account, result }) => {
-      const near = nearestExpiry(result)
-      return {
-        account, result,
-        expire: near.expire,
-        amount: near.amount,
-        days: near.expire ? daysLeft(near.expire) : null,
-      }
-    })
-    .sort((a, b) => ((a.days === null ? 999 : a.days) - (b.days === null ? 999 : b.days))
-      || (b.amount - a.amount))
+  const stats = buildStats(results)
   const lines = [
     '📌 Trae · 每日签到播报',
     `📅 ${new Date().toISOString().slice(0, 10)}`,
